@@ -341,6 +341,9 @@ rtps:
     id: 158
   - msg: estimator_event_flags
     id: 159
+  - msg: actuator_direct_control
+    id: 179
+    receive: true
   ########## multi topics: begin ##########
   - msg: actuator_controls_0
     id: 180

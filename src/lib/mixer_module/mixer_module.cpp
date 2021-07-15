@@ -53,6 +53,7 @@ MixingOutput::MixingOutput(uint8_t max_num_outputs, OutputModuleInterface &inter
 	{&interface, ORB_ID(actuator_controls_4)},
 	{&interface, ORB_ID(actuator_controls_5)},
 },
+_direct_control_subs{&interface, ORB_ID(actuator_direct_control)},
 _scheduling_policy(scheduling_policy),
 _support_esc_calibration(support_esc_calibration),
 _max_num_outputs(max_num_outputs < MAX_ACTUATORS ? max_num_outputs : MAX_ACTUATORS),
@@ -177,6 +178,12 @@ bool MixingOutput::updateSubscriptions(bool allow_wq_switch, bool limit_callback
 			}
 		}
 
+		if (_direct_control_subs.registerCallback()) {
+			PX4_DEBUG("subscribed to direct_actuator_control_");
+		} else {
+			PX4_ERR("direct_actuator_control register callback failed!");
+		}
+
 		// if nothing required keep periodic schedule (so the module can update other things)
 		if (_groups_required == 0) {
 			// TODO: this might need to be configurable depending on the module
@@ -204,6 +211,8 @@ void MixingOutput::setMaxTopicUpdateRate(unsigned max_topic_update_interval_us)
 			_control_subs[i].set_interval_us(_max_topic_update_interval_us);
 		}
 	}
+
+	_direct_control_subs.set_interval_us(_max_topic_update_interval_us);
 }
 
 void MixingOutput::setAllMinValues(uint16_t value)
@@ -239,6 +248,8 @@ void MixingOutput::unregister()
 	for (auto &control_sub : _control_subs) {
 		control_sub.unregisterCallback();
 	}
+
+	_direct_control_subs.unregisterCallback();
 }
 
 void MixingOutput::updateOutputSlewrateMultirotorMixer()
@@ -351,6 +362,11 @@ bool MixingOutput::update()
 		}
 	}
 
+	// checking control mode
+	if (_v_control_mode_sub.update(&_v_control_mode)) {
+		_motor_control = _v_control_mode.flag_control_motors_enabled;
+	}
+
 	// check for motor test
 	if (!_armed.armed && !_armed.manual_lockdown) {
 		unsigned num_motor_test = motorTest();
@@ -396,9 +412,21 @@ bool MixingOutput::update()
 		}
 	}
 
+	/* get direct controls */
+	_direct_control_subs.copy(&_direct_controls);
+
 	/* do mixing */
 	float outputs[MAX_ACTUATORS] {};
-	const unsigned mixed_num_outputs = _mixers->mix(outputs, _max_num_outputs);
+	unsigned mixed_num_outputs = 0;
+	if (_motor_control) {
+		// here do the assignment looking at the motor control topic
+		for (size_t i = 0; i < _max_num_outputs; i++) {
+			outputs[i] = _direct_controls.output[i];
+		}
+		mixed_num_outputs = _max_num_outputs;
+	} else {
+		mixed_num_outputs = _mixers->mix(outputs, _max_num_outputs);
+	}
 
 	/* the output limit call takes care of out of band errors, NaN and constrains */
 	output_limit_calc(_throttle_armed, armNoThrottle(), mixed_num_outputs, _reverse_output_mask,
